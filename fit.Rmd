@@ -1,0 +1,123 @@
+## Learning to classify barbell form
+
+### Author: adjog, a Coursera predmachlearn-015 participant
+
+### Summary
+
+We use the Weight Lifting Exercise Dataset
+(http://groupware.les.in.puc-reio.br/har) and build a model that
+predicts whether the participants are performing barbell lifts
+correctly. A "gbm" (Gradient Boosting Machinel) model was found that has high
+predictive accuracy (about 99.5).
+
+### Data cleaning and EDA
+
+We are provided with a 19622 observations (we call _fullTraining_) and
+a separate validation set of 20 observations. To save space, I 
+omit details of basic EDA. There are two important problems found:
+some attributes are spurious to the task (e.g. the time
+at which data was collected or the collection window), and
+others have _very_ frequent NA's. 
+I clean the data by removing all spurious attributes and
+all attributes that are missing more than 90% of the time, leaving 
+53 predictors. Those 53 predictors are always present, so no imputation is needed.
+
+```{r eval=T, echo=F, results='hide', cache=F, warning=F, message=F}
+library(lattice, warn.conflicts=F, quietly=T)
+library(plyr, warn.conflicts=F, quietly=T)
+library(dplyr, warn.conflicts=F, quietly=T)
+library(ggplot2, warn.conflicts=F, quietly=T)
+library(caret, warn.conflicts=F, quietly=T)
+library(gbm, warn.conflicts=F, quietly=T)
+library(survival, warn.conflicts=F, quietly=T)
+
+if (!file.exists("testing.csv")) {
+   download.file(
+     "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+     destfile = "testing.csv",
+     method = "libcurl"
+     )
+}
+validation <- read.csv("testing.csv")
+
+if (!file.exists("training.csv")) {
+   download.file(
+     "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+     destfile = "training.csv",
+     method = "libcurl"
+     )
+}
+fullTraining <- read.csv("training.csv")
+```
+
+
+```{r eval=T, results='hide', cache=T}
+missing=names(fullTraining)[
+    sapply(fullTraining, function(x) {sum(is.na(x))/length(x)} > 0.9)
+    ]
+missing2=names(validation)[
+    sapply(validation, function(x) {sum(is.na(x))/length(x)} > 0.9)
+    ]
+fullTraining = dplyr::select(fullTraining, matches("arm|belt|dumbbell|classe"))
+validation = dplyr::select(validation, matches("arm|belt|dumbbell|classe"))
+fullTraining = dplyr::select(fullTraining, -one_of(missing))
+validation = dplyr::select(validation, -one_of(missing))
+fullTraining = dplyr::select(fullTraining, -one_of(missing2))
+validation = dplyr::select(validation, -one_of(missing2))
+```
+
+I divided _fullTraining_ into three randomly chosen partitions(using createDataPartition): _training_ with 70% of the points (13737) and two hold-out sets _testingA_ and _testingB_ with 15% of the points each.
+
+```{r eval=T, results='hide', cache=T}
+set.seed(1234)
+sel_train = createDataPartition(y=fullTraining$classe, p=0.7, list=FALSE)
+training = fullTraining[sel_train,]
+testingall = fullTraining[-sel_train,]
+sel_testing = createDataPartition(y=testingall$classe, p=0.5, list=FALSE)
+testingA = testingall[sel_testing,]
+testingB = testingall[-sel_testing,]
+```
+
+### Approach
+
+Preliminary investigation on 10% of the downloaded training set (to
+make things faster), with a wide variety of learning methods without careful tuning, using both
+cross-validation and _testingA_, showed that Gradient
+Boosted Machines ("gbm") have high-promise: good accuracy (about 95% when trained on this small dataset), with reasonable run-time.
+
+I hand-tuned some of the gbm parameters on this 10% set, with the main changed being the _n.trees_ parameter should be increased to about 500. This tuning still touches _testingA_ and also uses cross-validation within _training_.
+
+I then refit the chosen gbm model on the full 70% _training_ set using the following code:
+
+```{r eval=T, results='hide', cache=T, warning=F}
+fitControl = trainControl(
+    method = "repeatedcv",
+    number = 10,
+    repeats = 10
+    )
+gbmparams = expand.grid(
+    interaction.depth = c(4),
+    n.trees = c(500),
+    shrinkage = c(.3),
+    n.minobsinnode = c(10)
+    )
+finalModel = train(
+    classe ~ .,
+    data=training,
+    method="gbm",
+    trControl = fitControl,
+    tuneGrid = gbmparams
+    )
+ ```
+
+In this case "gbm/train" performs cross validation internally, and the 
+cross validation accuracy is at 99.47% (see below). This should be biased high, since the fit is on the _training_ set. 
+```{r eval=T, cache=T}
+print(finalModel)
+```
+  
+Accuracy on _testingA_ was 99.6%, and this also should biased high since I looked at _testingA_ when choosing the model. Accuracy on _testingB_ should be unbiased though, since I had not looked at it before, and was 99.46%. (Surprisingly close to the supposedly biased estimates.)
+
+```{r}
+confusionMatrix(testingB$classe, predict(finalModel, testingB))
+```
